@@ -6,6 +6,8 @@ import threading
 import unicodedata
 import sys
 import os
+import time
+import pythoncom
 
 # --- CONFIGURATION ---
 ctk.set_appearance_mode("Dark")
@@ -34,7 +36,7 @@ class SinhalaConverter:
             'ු': 'q', 'ූ': 'Q', # Basic Papilla (See logic for variations)
             'ෘ': 'D', 
             'ෙ': 'f', 'ේ': 'fa', 'ෛ': 'ff', # Kombuwa bases
-            'ඃ': 'H', 'ං': 'x', '්': 'A'
+            'ඃ': 'H', 'ං': 'x', '්': 'a'
         }
         
         # Special Mappings for Rephaya/Rakaaransaya (FM Standards)
@@ -147,15 +149,26 @@ class SinhalaTypeApp(ctk.CTk):
         self.lbl_font.pack(side="left")
         
         self.opt_font = ctk.CTkOptionMenu(self.frm_settings, values=["FM Abhaya", "ISI Fonts", "Unicode"])
-        self.opt_font.pack(side="right", fill="x", expand=True, padx=(10, 0))
+        self.opt_font.pack(side="right", fill="x", expand=True, padx=(5, 0))
+
+        # 3.1 Advanced Font Name
+        self.frm_font_manual = ctk.CTkFrame(self, fg_color="transparent")
+        self.frm_font_manual.grid(row=4, column=0, padx=20, pady=(0, 5), sticky="ew")
+        
+        self.lbl_manual_font = ctk.CTkLabel(self.frm_font_manual, text="Manual Font Name:", font=("Arial", 10))
+        self.lbl_manual_font.pack(side="left")
+        
+        self.txt_manual_font = ctk.CTkEntry(self.frm_font_manual, placeholder_text="e.g. FMAbhaya", height=25)
+        self.txt_manual_font.pack(side="right", fill="x", expand=True, padx=(10, 0))
+        self.txt_manual_font.insert(0, "FMAbhaya") # Default
 
         self.chk_autocopy = ctk.CTkCheckBox(self, text="Auto-Copy to Clipboard")
-        self.chk_autocopy.grid(row=4, column=0, padx=20, pady=10, sticky="w")
+        self.chk_autocopy.grid(row=5, column=0, padx=20, pady=10, sticky="w")
         self.chk_autocopy.select()
 
         # 4. Buttons
         self.frm_buttons = ctk.CTkFrame(self, fg_color="transparent")
-        self.frm_buttons.grid(row=5, column=0, padx=20, pady=10)
+        self.frm_buttons.grid(row=6, column=0, padx=20, pady=10)
 
         self.btn_ps = ctk.CTkButton(self.frm_buttons, text="Send to Photoshop", 
                                     command=self.start_ps_thread, 
@@ -168,7 +181,7 @@ class SinhalaTypeApp(ctk.CTk):
 
         # 5. Status
         self.lbl_status = ctk.CTkLabel(self, text="Ready", text_color="gray")
-        self.lbl_status.grid(row=6, column=0, pady=(0, 20))
+        self.lbl_status.grid(row=7, column=0, pady=(0, 20))
 
     def copy_text(self):
         raw_text = self.txt_input.get("0.0", "end").strip()
@@ -184,69 +197,124 @@ class SinhalaTypeApp(ctk.CTk):
         """Runs Photoshop automation in a background thread to prevent UI freeze."""
         threading.Thread(target=self.send_to_photoshop, daemon=True).start()
 
-    def send_to_photoshop(self):
-        raw_text = self.txt_input.get("0.0", "end").strip()
-        if not raw_text:
-            self.update_status("Error: Input is empty", "red")
-            return
-
-        self.update_status("Connecting to Photoshop...", "orange")
-
-        try:
-            # 1. Connect to Photoshop
-            ps_app = None
+    def _connect_to_photoshop(self):
+        """Attempts to connect to Photoshop with retries for busy states."""
+        max_retries = 3
+        last_error = None
+        
+        for attempt in range(max_retries):
             try:
-                ps_app = win32com.client.GetActiveObject("Photoshop.Application")
+                # Try GetActiveObject first
+                return win32com.client.GetActiveObject("Photoshop.Application")
             except Exception as e:
-                print(f"GetActiveObject failed: {e}")
-                try:
-                    ps_app = win32com.client.Dispatch("Photoshop.Application")
-                except Exception as e2:
-                    print(f"Dispatch failed: {e2}")
-                    self.update_status(f"Error: Could not connect to Photoshop. {e}", "red")
-                    return
+                error_code = getattr(e, 'hresult', None) or getattr(e, 'args', [None])[0]
+                
+                # RPC_E_SERVERCALL_RETRYLATER (Application is busy)
+                if error_code == -2147417846: 
+                   self.update_status(f"Photoshop busy... retrying ({attempt+1}/{max_retries})", "orange")
+                   time.sleep(1)
+                   continue 
 
-            if ps_app.Documents.Count == 0:
-                self.update_status("Error: No document open", "red")
+                # Fallback to Dispatch
+                try:
+                    return win32com.client.Dispatch("Photoshop.Application")
+                except Exception as e2:
+                    last_error = e2
+                    time.sleep(0.5)
+        
+        raise last_error if last_error else Exception("Could not connect to Photoshop")
+
+    def send_to_photoshop(self):
+        # Initialize COM for this thread
+        pythoncom.CoInitialize()
+        try:
+            raw_text = self.txt_input.get("0.0", "end").strip()
+            if not raw_text:
+                self.update_status("Error: Input is empty", "red")
                 return
 
-            # 2. Convert Text
-            font_mode = self.opt_font.get()
-            final_text = raw_text
-            
-            if font_mode == "FM Abhaya":
-                final_text = self.converter.process(raw_text)
+            self.update_status("Connecting to Photoshop...", "orange")
 
-            # 3. Add Layer
-            doc = ps_app.Application.ActiveDocument
-            art_layer = doc.ArtLayers.Add()
-            art_layer.Kind = 2 # Text Layer
-            
-            text_item = art_layer.TextItem
-            text_item.Contents = final_text
-            text_item.Size = 36 # Default size
-            
-            # 4. Set Font (With Fallback)
             try:
+                # 1. Connect to Photoshop (Robust)
+                ps_app = self._connect_to_photoshop()
+
+                if ps_app.Documents.Count == 0:
+                    self.update_status("Error: No document open", "red")
+                    return
+
+                # 2. Convert Text
+                font_mode = self.opt_font.get()
+                final_text = raw_text
+                
                 if font_mode == "FM Abhaya":
-                    text_item.Font = "FMAbhaya"
-                elif font_mode == "ISI Fonts":
-                    text_item.Font = "IsiAbhaya" # Change to specific ISI font name if known
+                    final_text = self.converter.process(raw_text)
+
+                # 3. Add Layer
+                try:
+                    doc = ps_app.Application.ActiveDocument
+                    art_layer = doc.ArtLayers.Add()
+                    art_layer.Kind = 2 # Text Layer
+                    
+                    text_item = art_layer.TextItem
+                    text_item.Contents = final_text
+                    text_item.Size = 36 # Default size
+                except Exception as e_layer:
+                     self.update_status(f"Layer Error: {str(e_layer)[:20]}", "red")
+                     return
+                
+                # 4. Set Font (Robust)
+                target_font_name = self.txt_manual_font.get().strip()
+                if not target_font_name and font_mode == "FM Abhaya":
+                    target_font_name = "FMAbhaya"
+                
+                font_set_success = False
+                
+                # List of candidates to try
+                candidates = [target_font_name]
+                if font_mode == "FM Abhaya":
+                    candidates.extend(["FMAbhaya", "FM-Abhaya", "FMAbhaya Regular", "Abhaya"])
+                
+                # Deduplicate preserving order
+                candidates = list(dict.fromkeys(filter(None, candidates)))
+
+                for font_name in candidates:
+                    try:
+                        text_item.Font = font_name
+                        font_set_success = True
+                        print(f"Success: Set font to {font_name}")
+                        break
+                    except Exception:
+                        print(f"Failed to set font: {font_name}")
+                        continue
+                
+                # 5. Fix Spacing (Critical for Ligatures)
+                try:
+                    text_item.Tracking = 0
+                except Exception:
+                    pass
+                
+                if not font_set_success:
+                    self.update_status("Warning: Font 'FMAbhaya' not found on system.", "orange")
                 else:
-                    text_item.Font = "Iskoola Pota"
-            except Exception:
-                print("Font not found, defaulting")
-                self.update_status("Warning: Target font missing", "orange")
+                    self.update_status("Success: Layer Added!", "green")
 
-            # Auto Copy check
-            if self.chk_autocopy.get():
-                pyperclip.copy(final_text)
+                # Auto Copy check
+                if self.chk_autocopy.get():
+                    pyperclip.copy(final_text)
 
-            self.update_status("Success: Layer Added!", "green")
-
-        except Exception as e:
-            print(f"Critical Error: {e}")
-            self.update_status(f"Error: {str(e)[:30]}...", "red")
+            except Exception as e:
+                print(f"Critical Error: {e}")
+                msg = str(e)
+                if "-2146959355" in msg or "Server execution failed" in msg:
+                    self.update_status("Error: Restart PC required (COM Hang)", "red")
+                elif "Application is busy" in msg or "-2147417846" in msg:
+                    self.update_status("Error: Photoshop is busy (Modal open?)", "red")
+                else:
+                    self.update_status(f"Error: {msg[:30]}...", "red")
+        finally:
+            # Uninitialize COM
+            pythoncom.CoUninitialize()
 
     def update_status(self, message, color):
         self.lbl_status.configure(text=message, text_color=color)

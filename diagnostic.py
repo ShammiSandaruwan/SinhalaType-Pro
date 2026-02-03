@@ -67,6 +67,13 @@ def test_conversion_logic(text):
     # wuAud
     
     print(f"Heuristic Check: If input was 'අම්මා', expected starts with 'w'. Got: {final[0] if final else 'Empty'}")
+    
+    # Check Clipboard
+    import pyperclip
+    pyperclip.copy(final)
+    print(f"\n[INFO] Copied '{final}' to clipboard.")
+    print("IMPORTANT: If you paste this into Notepad/Browser, it WILL look like English text (e.g. 'wuAud').")
+    print("This is CORRECT. It will only look like Sinhala if you paste it into Photoshop and select 'FMAbhaya' font.")
     return final
 
 if __name__ == "__main__":
