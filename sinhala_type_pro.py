@@ -194,11 +194,17 @@ class SinhalaTypeApp(ctk.CTk):
 
         try:
             # 1. Connect to Photoshop
+            ps_app = None
             try:
                 ps_app = win32com.client.GetActiveObject("Photoshop.Application")
-            except Exception:
-                self.update_status("Error: Photoshop is not open", "red")
-                return
+            except Exception as e:
+                print(f"GetActiveObject failed: {e}")
+                try:
+                    ps_app = win32com.client.Dispatch("Photoshop.Application")
+                except Exception as e2:
+                    print(f"Dispatch failed: {e2}")
+                    self.update_status(f"Error: Could not connect to Photoshop. {e}", "red")
+                    return
 
             if ps_app.Documents.Count == 0:
                 self.update_status("Error: No document open", "red")
@@ -240,7 +246,7 @@ class SinhalaTypeApp(ctk.CTk):
 
         except Exception as e:
             print(f"Critical Error: {e}")
-            self.update_status("Error: Automation Failed", "red")
+            self.update_status(f"Error: {str(e)[:30]}...", "red")
 
     def update_status(self, message, color):
         self.lbl_status.configure(text=message, text_color=color)
